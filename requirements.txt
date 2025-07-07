@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pandas
+yfinance
+keras
+tensorflow
+scikit-learn
+plotly
+nbformat
+arch
+dotenv
+boto3

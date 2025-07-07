@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
+test.ipynb
+*.html
+*.csv
+*.h5
+*.pkl
 
 # C extensions
 *.so
