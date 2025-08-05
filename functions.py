@@ -38,7 +38,7 @@ def simulate_prices(prices, n_days, n_simulations=1000):
 
     return simulations
 
-def plot_simulation(df, simulations, input_data):
+def plot_simulation(df, simulations, input_data, save_local=False):
     mean_price = simulations.mean(axis=1).tolist()
     percentil_botton = input_data.percentil
     percentil_upper = 100-input_data.percentil
@@ -69,13 +69,15 @@ def plot_simulation(df, simulations, input_data):
         yaxis_title="Precio",
         template="plotly_white"
     )
-    html_filename = f"html_result/{input_data.commodity.title()}_simulation.html"
-    fig.write_html(html_filename)
+    if save_local:
+        html_filename = f"html_result/{input_data.commodity.title()}_simulation.html"
+        fig.write_html(html_filename)
+
     graph_json = json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
 
     return graph_json
     
-def plot_volatility_forecast(garch_vol, forecast, req):
+def plot_volatility_forecast(garch_vol, forecast, req, save_local=False):
     forecast_dates = pd.date_range(start=garch_vol.index[-1] + timedelta(days=1), periods=req.n_days)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=garch_vol.index, y=garch_vol, name="GARCH Volatility", line=dict(color="blue")))
@@ -83,12 +85,13 @@ def plot_volatility_forecast(garch_vol, forecast, req):
 
     fig.update_layout(title=f"Predicción de Volatilidad - {req.commodity.title()}", xaxis_title="Fecha", yaxis_title="Volatilidad")
 
-    html_path = f"html_result/{req.commodity}_vol_forecast.html"
-    fig.write_html(html_path)
+    if save_local==True:
+        html_path = f"html_result/{req.commodity}_vol_forecast.html"
+        fig.write_html(html_path)
 
     return {
         "message": "Forecast generado",
-        "forecast_html": html_path,
+        # "forecast_html": html_path,
         "plot": json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
     }
 

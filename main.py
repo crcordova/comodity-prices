@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import yfinance as yf
 import pandas as pd
 import json
@@ -11,22 +12,43 @@ from keras.layers import LSTM, Dense
 from keras.models import load_model
 from keras.losses import MeanSquaredError
 import joblib
+from typing import List
 
 
 from models import SimulationInput, CalibrationRequest, ForecastRequest
 from functions import simulate_prices, plot_simulation, plot_volatility_forecast, estimated_volatility_garch, upload_s3
 
-app = FastAPI()
+app = FastAPI(title="API Financiera Simulación de precios", version="1.0.0")
+origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # permite frontend
+    allow_credentials=True,
+    allow_methods=["*"],     # permite todos los métodos, incluido OPTIONS
+    allow_headers=["*"],
+)
 
 with open("commodity_tickers.json") as f:
     ticker_map = json.load(f)
+
+@app.get("/commodities", response_model=List[str])
+def get_commodities():
+
+    try:
+        commodities = list(ticker_map.keys())
+        return commodities
+    except Exception as e:
+        raise RuntimeError(f"Error leyendo el archivo: {e}")
 
 @app.get("/get_prices/")
 async def get_prices(commodity: str):
     '''
     Descarga precios historicos del commodity, este debe estar listado en archivo .json
     '''
-
+    if commodity == "Zinc":
+        return{"message": f"{commodity} commodity should be updated manually please contact support"}
+    
     ticker = ticker_map.get(commodity)
     if not ticker:
         raise HTTPException(status_code=404, detail="Commodity not found")
@@ -37,6 +59,7 @@ async def get_prices(commodity: str):
 
     filename = f"historical_data/{commodity}_prices.csv"
     data.to_csv(filename, index=False)
+    upload_s3(data,f"prices/{commodity}_prices.csv")
     
     return {"message": f"Data saved to {filename}"}
 
@@ -67,7 +90,7 @@ def simulate(input_data: SimulationInput):
     df_res.to_csv(f'MC_result/{input_data.commodity}_sim.csv', index=False)
     upload_s3(df_res,f"{input_data.commodity}_sim.csv")
 
-    graph_json = plot_simulation(df, simulations, input_data)
+    graph_json = plot_simulation(df, simulations, input_data, save_local=False)
 
     return {
         "plot": graph_json,
@@ -140,3 +163,8 @@ def forecast_volatility(req: ForecastRequest):
 
     response = plot_volatility_forecast(garch_vol, forecast, req)
     return response
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
