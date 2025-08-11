@@ -10,3 +10,4 @@ nbformat
 arch
 dotenv
 boto3
+python-multipart

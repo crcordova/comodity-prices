@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import yfinance as yf
 import pandas as pd
 import json
 import numpy as np
 import os
+import shutil
 from arch import arch_model
 from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
@@ -163,6 +165,23 @@ def forecast_volatility(req: ForecastRequest):
 
     response = plot_volatility_forecast(garch_vol, forecast, req)
     return response
+
+@app.post("/upload-csv/")
+async def upload_csv(file: UploadFile = File(...)):
+    # Validar que sea CSV
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .csv")
+
+    file_path = os.path.join('historical_data', "Zinc_prices.csv")
+
+    # Guardar archivo en la carpeta historical_data
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return JSONResponse(content={
+        "message": "Archivo guardado correctamente",
+        "file_path": file_path
+    })
 
 if __name__ == "__main__":
     import uvicorn
