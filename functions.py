@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 import os
 import io
 import boto3
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 load_dotenv()
 BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
@@ -48,20 +52,40 @@ def plot_simulation(df, simulations, input_data, save_local=False):
     last_date = df["Date"].max()
     forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=input_data.n_days)
 
-    df_last_year = df[df["Date"] > (df["Date"].max() - timedelta(days=365))]
+    six_months_ago = df["Date"].max() - timedelta(days=180)
+    # df_last = df[df["Date"] > (df["Date"].max() - timedelta(days=365))]
+    df_last = df[df["Date"] >= six_months_ago]
+
     fig = go.Figure()
 
-    # Línea azul: datos históricos del último año
-    fig.add_trace(go.Scatter(x=df_last_year["Date"], y=df_last_year["Close"], mode='lines', name='Histórico', line=dict(color='blue')))
+    # Línea azul: histórico últimos 6 meses
+    fig.add_trace(go.Scatter(
+        x=df_last["Date"],
+        y=df_last["Close"],
+        mode='lines',
+        name='Histórico',
+        line=dict(color='blue')
+    ))
 
     # Línea roja: media simulada
-    fig.add_trace(go.Scatter(x=forecast_dates, y=mean_price, mode='lines', name='Simulación media', line=dict(color='red')))
+    fig.add_trace(go.Scatter(
+        x=forecast_dates,
+        y=mean_price,
+        mode='lines',
+        name='Simulación media',
+        line=dict(color='red')
+    ))
 
-    # Percentil 5 (límite inferior)
-    fig.add_trace(go.Scatter(x=forecast_dates, y=percentile_5, mode='lines', name=f'Percentil {percentil_botton}', line=dict(color='red', dash='dot')))
-
-    # Percentil 95 (límite superior)
-    fig.add_trace(go.Scatter(x=forecast_dates, y=percentile_95, mode='lines', name=f'Percentil {percentil_upper}', line=dict(color='red', dash='dot')))
+    # Banda sombreada entre percentil bajo y alto
+    fig.add_trace(go.Scatter(
+        x=forecast_dates.tolist() + forecast_dates[::-1].tolist(),  # unir superior + inferior en un polígono
+        y=percentile_95 + percentile_5[::-1],
+        fill='toself',
+        fillcolor='rgba(255,0,0,0.2)',  # rojo claro semitransparente
+        line=dict(color='rgba(255,255,255,0)'),  # sin borde
+        name=f'Rango percentil {percentil_botton}-{percentil_upper}',
+        showlegend=True
+    ))
 
     fig.update_layout(
         title=f"Simulación Monte Carlo: {input_data.commodity.title()}",
@@ -69,18 +93,48 @@ def plot_simulation(df, simulations, input_data, save_local=False):
         yaxis_title="Precio",
         template="plotly_white"
     )
+
     if save_local:
         html_filename = f"html_result/{input_data.commodity.title()}_simulation.html"
         fig.write_html(html_filename)
 
-    graph_json = json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
+    return json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
 
-    return graph_json
+    # fig = go.Figure()
+
+    # # Línea azul: datos históricos del último año
+    # fig.add_trace(go.Scatter(x=df_last["Date"], y=df_last["Close"], mode='lines', name='Histórico', line=dict(color='blue')))
+
+    # # Línea roja: media simulada
+    # fig.add_trace(go.Scatter(x=forecast_dates, y=mean_price, mode='lines', name='Simulación media', line=dict(color='red')))
+
+    # # Percentil 5 (límite inferior)
+    # fig.add_trace(go.Scatter(x=forecast_dates, y=percentile_5, mode='lines', name=f'Percentil {percentil_botton}', line=dict(color='red', dash='dot')))
+
+    # # Percentil 95 (límite superior)
+    # fig.add_trace(go.Scatter(x=forecast_dates, y=percentile_95, mode='lines', name=f'Percentil {percentil_upper}', line=dict(color='red', dash='dot')))
+
+    # fig.update_layout(
+    #     title=f"Simulación Monte Carlo: {input_data.commodity.title()}",
+    #     xaxis_title="Fecha",
+    #     yaxis_title="Precio",
+    #     template="plotly_white"
+    # )
+    # if save_local:
+    #     html_filename = f"html_result/{input_data.commodity.title()}_simulation.html"
+    #     fig.write_html(html_filename)
+
+    # graph_json = json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
+
+    # return graph_json
     
 def plot_volatility_forecast(garch_vol, forecast, req, save_local=False):
+
+    history_days = req.n_days + 60  # usamos el mismo número de días que el forecast
+    garch_vol_filtered = garch_vol[garch_vol.index >= garch_vol.index[-history_days]]
     forecast_dates = pd.date_range(start=garch_vol.index[-1] + timedelta(days=1), periods=req.n_days)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=garch_vol.index, y=garch_vol, name="GARCH Volatility", line=dict(color="blue")))
+    fig.add_trace(go.Scatter(x=garch_vol_filtered.index, y=garch_vol_filtered, name="GARCH Volatility", line=dict(color="blue")))
     fig.add_trace(go.Scatter(x=forecast_dates, y=forecast, name="Forecast (NN)", line=dict(color="orange", dash="dash")))
 
     fig.update_layout(title=f"Predicción de Volatilidad - {req.commodity.title()}", xaxis_title="Fecha", yaxis_title="Volatilidad")
@@ -112,3 +166,182 @@ def upload_s3(df, file_name: str):
     df.to_csv(csv_buffer, index=False)
 
     s3.put_object(Bucket=BUCKET_NAME, Key=file_name, Body=csv_buffer.getvalue())
+
+def load_and_generate_features(csv_file):
+    """
+    Lee archivo CSV con columnas Date y Close, y genera features técnicos.
+    Opcionalmente genera la columna objetivo 'target' con horizonte n_target días.
+    """
+    df = pd.read_csv(csv_file)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date')
+    
+    # Calcular retorno logarítmico
+    df['log_return'] = np.log(df['Close'] / df['Close'].shift(1))
+    
+    # Medias móviles
+    df['sma_20'] = df['Close'].rolling(window=20).mean()
+    df['sma_50'] = df['Close'].rolling(window=50).mean()
+    
+    # Volatilidad (desviación estándar de retornos)
+    df['volatility_10'] = df['log_return'].rolling(window=10).std(ddof=0)
+    df['volatility_20'] = df['log_return'].rolling(window=20).std(ddof=0)
+    
+    # MACD
+    ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = ema_12 - ema_26
+    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    
+    # Eliminar filas con NaN
+    df = df.dropna().reset_index(drop=True)
+    
+    return df
+
+def create_targets(df, n_days):
+    """
+    Recibe un DataFrame con al menos columnas Date, Close, log_return y volatility (o volatility_X).
+    Agrega columnas con el retorno futuro a n días y bandas superior/inferior usando la volatilidad actual.
+    """
+    df = df.copy()
+    
+    # Retorno futuro acumulado a n días
+    future_close = df['Close'].shift(-n_days)
+    df[f'ret_future_{n_days}'] = (future_close - df['Close']) / df['Close']
+    
+    # Usamos la volatilidad actual; si tienes varias puedes elegir la que te interese:
+    # Ej: 'volatility_20' o 'volatility_10'. Aquí uso volatility_10 como ejemplo:
+    if 'volatility_10' in df.columns:
+        vol_col = 'volatility_10'
+    else:
+        # fallback genérico
+        vol_col = [col for col in df.columns if 'volatility' in col][0]
+    
+    df['target_upper'] = df[f'ret_future_{n_days}'] + df[vol_col]*2
+    df['target_lower'] = df[f'ret_future_{n_days}'] - df[vol_col]*2
+    
+    # Opcional: eliminar filas con NaN producidas al final
+    df_final_test = df.tail(1)[['Date','Close','sma_20', 'sma_50', 'volatility_10', 'volatility_20', 'macd', 'signal']]
+    df = df.dropna(subset=[f'ret_future_{n_days}', 'target_upper', 'target_lower'])
+
+    return df, df_final_test
+
+def train_random_forest_range(df, n_days=5):
+    """
+    Entrena dos RandomForest (MultiOutput) para predecir target_upper y target_lower.
+    Retorna el modelo entrenado y conjunto X_test, y_test, y predicciones.
+    """
+
+    # Definir features y targets
+    feature_cols = ['sma_20', 'sma_50', 'volatility_10', 'volatility_20', 'macd', 'signal']
+    X = df[feature_cols]
+    y = df[['target_upper', 'target_lower']]
+
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=False # sin shuffle porque es serie temporal
+    )
+
+    # Modelo RandomForest multisalida
+    base_model = RandomForestRegressor(n_estimators=200, random_state=42)
+    model = MultiOutputRegressor(base_model)
+    model.fit(X_train, y_train)
+
+    # Predicciones
+    y_pred = model.predict(X_test)
+
+    return model, X_test, y_test, y_pred
+
+def evaluate_prediction(df, model, X_test, y_test, n_eval = 100):
+    X_eval = X_test.tail(n_eval)
+    y_eval = y_test.tail(n_eval)
+
+    # Predicciones
+    y_pred_eval = model.predict(X_eval)
+
+    # Convertimos a DataFrame para juntar todo
+    eval_df = X_eval.copy()
+    eval_df['ret_future_5'] = df[f'ret_future_5'][-len(X_test):].tail(n_eval).values
+    eval_df['pred_upper'] = y_pred_eval[:, 0]
+    eval_df['pred_lower'] = y_pred_eval[:, 1]
+    eval_df['target_upper_real'] = y_eval.iloc[:, 0].values
+    eval_df['target_lower_real'] = y_eval.iloc[:, 1].values
+
+    # Ver si el retorno real cae dentro del rango predicho
+    eval_df['is_covered'] = eval_df.apply(lambda row: row['pred_lower'] <= row['ret_future_5'] <= row['pred_upper'], axis=1)
+
+    coverage_rate = eval_df['is_covered'].mean()
+
+    # Necesitamos extraer la columna Date correspondiente
+    # Suponiendo que la porción de df_targets usada como test es secuencial (sin shuffle)
+    dates_test = df['Date'][-len(X_test):].tail(n_eval).values
+
+    # Construimos DataFrame para evaluación
+    eval_df = pd.DataFrame({
+        'Date': dates_test,
+        'ret_future_5': df['ret_future_5'][-len(X_test):].tail(n_eval).values,
+        'pred_upper': y_pred_eval[:, 0],
+        'pred_lower': y_pred_eval[:, 1]
+    })
+
+    eval_df['is_covered'] = eval_df.apply(lambda row: row['pred_lower'] <= row['ret_future_5'] <= row['pred_upper'], axis=1)
+    coverage_rate = eval_df['is_covered'].mean()
+
+    # Plot con fechas
+    fig = go.Figure()
+
+    # Franja inferior/superior
+    fig.add_trace(go.Scatter(
+        x=eval_df['Date'], y=eval_df['pred_upper'],
+        mode='lines', name='Predicted Upper', line=dict(dash='dash')
+    ))
+    fig.add_trace(go.Scatter(
+        x=eval_df['Date'], y=eval_df['pred_lower'],
+        mode='lines', name='Predicted Lower', line=dict(dash='dash')
+    ))
+
+    # Banda sombreada
+    fig.add_trace(go.Scatter(
+        x=pd.concat([eval_df['Date'], eval_df['Date'][::-1]]),
+        y=pd.concat([eval_df['pred_upper'], eval_df['pred_lower'][::-1]]),
+        fill='toself', fillcolor='rgba(0,100,80,0.2)',
+        line=dict(color='rgba(255,255,255,0)'),
+        hoverinfo="skip", showlegend=False
+    ))
+
+    # Línea real
+    fig.add_trace(go.Scatter(
+        x=eval_df['Date'], y=eval_df['ret_future_5'],
+        mode='lines+markers', name='Real Return 5d'
+    ))
+
+    fig.update_layout(
+        title=f"5-Day Return vs Predicted Range - Latest {n_eval} days",
+        xaxis_title="Date",
+        yaxis_title="Return (proportion)",
+        legend=dict(x=0.01, y=0.99)
+    )
+
+    return {'coverage_rate': coverage_rate, 'plot': json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))}
+
+def predict_future_range(df, model, n_days=5,):
+    '''Predice con el ultimo dato del dataframe original'''
+    features = ['sma_20', 'sma_50', 'volatility_10', 'volatility_20', 'macd', 'signal']
+    pred = model.predict(df[features])
+    pred_upper, pred_lower = pred[0]
+    
+    # Convertir retornos en precios futuros
+    last_close = df['Close'].iloc[-1]
+    price_upper = last_close * (1 + pred_upper)
+    price_lower = last_close * (1 + pred_lower)
+    
+    result = {
+        "date": df['Date'].iloc[-1],
+        "last_close": last_close,
+        f"pred_upper_ret": pred_upper,
+        f"pred_lower_ret": pred_lower,
+        f"pred_upper_price": price_upper,
+        f"pred_lower_price": price_lower
+    }
+    
+    return result

@@ -6,7 +6,9 @@ class SimulationInput(BaseModel):
     n_days: int = 5     # forecast horizon
     percentil: Annotated[int, Field(gt=0, le=50)] = 5 # Percentil de la simulación entre ]0,50] 
 
-
+class ForecastInput(BaseModel):
+    commodity: str
+    n_days: int = 5
 
 class CalibrationRequest(BaseModel):
     commodity: str

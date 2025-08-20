@@ -16,9 +16,13 @@ from keras.losses import MeanSquaredError
 import joblib
 from typing import List
 
-
-from models import SimulationInput, CalibrationRequest, ForecastRequest
-from functions import simulate_prices, plot_simulation, plot_volatility_forecast, estimated_volatility_garch, upload_s3
+from models import SimulationInput, CalibrationRequest, ForecastRequest, ForecastInput
+from functions import (
+    simulate_prices, plot_simulation, plot_volatility_forecast, 
+    estimated_volatility_garch, upload_s3, load_and_generate_features, 
+    create_targets, train_random_forest_range, evaluate_prediction,
+    predict_future_range
+)
 
 app = FastAPI(title="API Financiera Simulación de precios", version="1.0.0")
 origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
@@ -71,7 +75,7 @@ def simulate(input_data: SimulationInput):
     Con los precios historicos del commodity ya descargados, estos son usados para generar una simula a "n" días
     '''
     filename = f"historical_data/{input_data.commodity}_prices.csv"
-    
+    #TODO leer desde S3
     if not os.path.exists(filename):
         raise HTTPException(status_code=404, detail=f"File {filename} not found.")
     
@@ -98,7 +102,9 @@ def simulate(input_data: SimulationInput):
         "plot": graph_json,
         "meta": {
             "last_price": df['Close'].iloc[-1],
-            "days": input_data.n_days
+            "days": input_data.n_days,
+            'upper_price': percentile_95[-1],
+            'lower_price': percentile_5[-1],
         }
     }
 
@@ -164,6 +170,21 @@ def forecast_volatility(req: ForecastRequest):
         last_sequence = np.append(last_sequence[1:], pred)
 
     response = plot_volatility_forecast(garch_vol, forecast, req)
+    return response
+
+@app.post("/forecast-price")
+def forecast_price(req: ForecastInput):
+    '''Forecast commodity prices using RandomForest and some financial indicators'''
+    filename = f"historical_data/{req.commodity}_prices.csv"
+    #TODO leer desde S3
+    if not os.path.exists(filename):
+        raise HTTPException(status_code=404, detail=f"File {filename} not found.")
+    
+    df = load_and_generate_features(filename)
+    df, df_fin_test = create_targets(df, req.n_days)
+    model, X_test, y_test, y_pred = train_random_forest_range(df, n_days=5)
+    response = evaluate_prediction(df, model, X_test, y_test, n_eval=100)
+    response['predictions'] = predict_future_range(df_fin_test, model, n_days=5)
     return response
 
 @app.post("/upload-csv/")
