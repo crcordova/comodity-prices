@@ -164,11 +164,17 @@ def calibrate_volatility(req: CalibrationRequest):
 
 @app.post("/forecast-volatility")
 def forecast_volatility(req: ForecastRequest):
-    path = f"historical_data/{req.commodity}_prices.csv"
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="CSV not found")
-
-    garch_vol = estimated_volatility_garch(path, p=1,q=1)
+    '''Hace predicción de la volitalidad, con el modelo calibrado en el endpoint calibrate'''
+    filename = f"historical_data/{req.commodity}_prices.csv"
+    file_s3 = f"prices/{req.commodity}_prices.csv"
+    try:
+        df = read_historical_prices_s3(file_s3)
+    except Exception as e:
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=404, detail=f"File {filename} not found.")
+    
+    df = df.sort_values("Date")
+    garch_vol = estimated_volatility_garch(df, p=1,q=1)
 
     look_back = 10
     last_sequence = garch_vol[-look_back:].values
