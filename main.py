@@ -21,8 +21,9 @@ from functions import (
     simulate_prices, plot_simulation, plot_volatility_forecast, 
     estimated_volatility_garch, upload_s3, load_and_generate_features, 
     create_targets, train_random_forest_range, evaluate_prediction,
-    predict_future_range
+    predict_future_range, save_forecast_to_s3, read_historical_prices_s3
 )
+# from zinc_extract import get_zinc_data
 
 app = FastAPI(title="API Financiera Simulación de precios", version="1.0.0")
 origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
@@ -40,6 +41,7 @@ with open("commodity_tickers.json") as f:
 
 @app.get("/commodities", response_model=List[str])
 def get_commodities():
+    '''get list of commodities mapped'''
 
     try:
         commodities = list(ticker_map.keys())
@@ -53,8 +55,10 @@ async def get_prices(commodity: str):
     Descarga precios historicos del commodity, este debe estar listado en archivo .json
     '''
     if commodity == "Zinc":
-        return{"message": f"{commodity} commodity should be updated manually please contact support"}
-    
+        # return{"message": f"{commodity} commodity should be updated manually please contact support"}
+        # data = get_zinc_data()
+        # upload_s3(data,f"prices/{commodity}_prices.csv")
+        return{"message": f"Zinc data extracted and saved to CSV"}
     ticker = ticker_map.get(commodity)
     if not ticker:
         raise HTTPException(status_code=404, detail="Commodity not found")
@@ -75,12 +79,15 @@ def simulate(input_data: SimulationInput):
     Con los precios historicos del commodity ya descargados, estos son usados para generar una simula a "n" días
     '''
     filename = f"historical_data/{input_data.commodity}_prices.csv"
-    #TODO leer desde S3
-    if not os.path.exists(filename):
-        raise HTTPException(status_code=404, detail=f"File {filename} not found.")
+    file_s3 = f"prices/{input_data.commodity}_prices.csv"
+    try:
+        df = read_historical_prices_s3(file_s3)
+    except Exception as e:
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=404, detail=f"File {filename} not found.")
     
-    df = pd.read_csv(filename, parse_dates=["Date"])
-    df.sort_values("Date", inplace=True)
+        df = pd.read_csv(filename, parse_dates=["Date"])
+        df.sort_values("Date", inplace=True)
 
     if "Close" not in df.columns:
         raise HTTPException(status_code=400, detail="CSV must have a 'price' column.")
@@ -185,6 +192,7 @@ def forecast_price(req: ForecastInput):
     model, X_test, y_test, y_pred = train_random_forest_range(df, n_days=5)
     response = evaluate_prediction(df, model, X_test, y_test, n_eval=100)
     response['predictions'] = predict_future_range(df_fin_test, model, n_days=5)
+    save_forecast_to_s3(response, req.commodity)
     return response
 
 @app.post("/upload-csv/")

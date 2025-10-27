@@ -11,3 +11,6 @@ arch
 dotenv
 boto3
 python-multipart
+playwright
+crawl4ai
+transformers

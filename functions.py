@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import os
 import io
 import boto3
+from io import StringIO
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
@@ -100,39 +101,12 @@ def plot_simulation(df, simulations, input_data, save_local=False):
 
     return json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
 
-    # fig = go.Figure()
-
-    # # Línea azul: datos históricos del último año
-    # fig.add_trace(go.Scatter(x=df_last["Date"], y=df_last["Close"], mode='lines', name='Histórico', line=dict(color='blue')))
-
-    # # Línea roja: media simulada
-    # fig.add_trace(go.Scatter(x=forecast_dates, y=mean_price, mode='lines', name='Simulación media', line=dict(color='red')))
-
-    # # Percentil 5 (límite inferior)
-    # fig.add_trace(go.Scatter(x=forecast_dates, y=percentile_5, mode='lines', name=f'Percentil {percentil_botton}', line=dict(color='red', dash='dot')))
-
-    # # Percentil 95 (límite superior)
-    # fig.add_trace(go.Scatter(x=forecast_dates, y=percentile_95, mode='lines', name=f'Percentil {percentil_upper}', line=dict(color='red', dash='dot')))
-
-    # fig.update_layout(
-    #     title=f"Simulación Monte Carlo: {input_data.commodity.title()}",
-    #     xaxis_title="Fecha",
-    #     yaxis_title="Precio",
-    #     template="plotly_white"
-    # )
-    # if save_local:
-    #     html_filename = f"html_result/{input_data.commodity.title()}_simulation.html"
-    #     fig.write_html(html_filename)
-
-    # graph_json = json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
-
-    # return graph_json
-    
 def plot_volatility_forecast(garch_vol, forecast, req, save_local=False):
 
     history_days = req.n_days + 60  # usamos el mismo número de días que el forecast
     garch_vol_filtered = garch_vol[garch_vol.index >= garch_vol.index[-history_days]]
     forecast_dates = pd.date_range(start=garch_vol.index[-1] + timedelta(days=1), periods=req.n_days)
+    save_volatility_to_s3(forecast_dates, forecast, req.commodity)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=garch_vol_filtered.index, y=garch_vol_filtered, name="GARCH Volatility", line=dict(color="blue")))
     fig.add_trace(go.Scatter(x=forecast_dates, y=forecast, name="Forecast (NN)", line=dict(color="orange", dash="dash")))
@@ -161,11 +135,6 @@ def estimated_volatility_garch(path, p=1,q=1):
 
     return garch_vol
 
-def upload_s3(df, file_name: str):
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-
-    s3.put_object(Bucket=BUCKET_NAME, Key=file_name, Body=csv_buffer.getvalue())
 
 def load_and_generate_features(csv_file):
     """
@@ -345,3 +314,87 @@ def predict_future_range(df, model, n_days=5,):
     }
     
     return result
+
+def upload_s3(df, file_name: str):
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+
+    s3.put_object(Bucket=BUCKET_NAME, Key=file_name, Body=csv_buffer.getvalue())
+
+def save_forecast_to_s3(response: dict, commodity_name: str):
+    """
+    Convierte el response en CSV y lo guarda en S3.
+    """
+    coverage_rate = response.get("coverage_rate")
+    predictions = response.get("predictions")
+    if isinstance(predictions, dict):
+        predictions = [predictions]
+
+    # Convertir Timestamps y np.float64 a tipos nativos
+    for pred in predictions:
+        for k, v in pred.items():
+            if isinstance(v, pd.Timestamp):
+                pred[k] = v.strftime("%Y-%m-%d")
+            elif hasattr(v, "item"):  # np.float64 -> float
+                pred[k] = float(v)
+
+    df = pd.DataFrame(predictions)
+
+    # Agregar coverage_rate a todas las filas
+    df["coverage_rate"] = coverage_rate
+
+    # Convertir DataFrame a CSV (en memoria)
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+
+    # Nombre del archivo
+    file_name = f"{commodity_name}_forecast_price.csv"
+
+    # Subir a S3
+    s3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=file_name,
+        Body=csv_buffer.getvalue(),
+        ContentType="text/csv"
+    )
+
+def save_volatility_to_s3(forecast_dates, forecast, commodity_name):
+    """
+    Guarda la volatilidad proyectada en un CSV en S3.
+    """
+    # Asegurarnos que forecast_dates y forecast tengan la misma longitud
+    if len(forecast_dates) != len(forecast):
+        raise ValueError("forecast_dates y forecast deben tener la misma longitud")
+
+    # Crear lista de diccionarios
+    data = []
+    for date, vol in zip(forecast_dates, forecast):
+        # Convertir np.float64 a float y Timestamp a string
+        if hasattr(vol, "item"):
+            vol = float(vol)
+        if isinstance(date, pd.Timestamp):
+            date = date.strftime("%Y-%m-%d")
+        data.append({"date": date, "forecast_volatility": vol})
+
+    # Crear DataFrame
+    df = pd.DataFrame(data)
+
+    # CSV en memoria
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+
+    # Subir a S3
+    file_name = f"{commodity_name}_forecast_volatility.csv"
+    s3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=file_name,
+        Body=csv_buffer.getvalue(),
+        ContentType="text/csv"
+    )
+
+def read_historical_prices_s3(file_s3 : str):
+    obj = s3.get_object(Bucket=BUCKET_NAME, Key=file_s3)
+    data = obj['Body'].read().decode('utf-8')
+    df = pd.read_csv(StringIO(data), parse_dates=["Date"])
+    df.sort_values("Date", inplace=True)
+    return df
