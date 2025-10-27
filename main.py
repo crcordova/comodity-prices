@@ -199,11 +199,14 @@ def forecast_volatility(req: ForecastRequest):
 def forecast_price(req: ForecastInput):
     '''Forecast commodity prices using RandomForest and some financial indicators'''
     filename = f"historical_data/{req.commodity}_prices.csv"
-    #TODO leer desde S3
-    if not os.path.exists(filename):
-        raise HTTPException(status_code=404, detail=f"File {filename} not found.")
+    file_s3 = f"prices/{req.commodity}_prices.csv"
+    try:
+        df = read_historical_prices_s3(file_s3)
+    except Exception as e:
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=404, detail=f"File {filename} not found.")
     
-    df = load_and_generate_features(filename)
+    df = load_and_generate_features(df)
     df, df_fin_test = create_targets(df, req.n_days)
     model, X_test, y_test, y_pred = train_random_forest_range(df, n_days=5)
     response = evaluate_prediction(df, model, X_test, y_test, n_eval=100)

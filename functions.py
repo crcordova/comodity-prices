@@ -135,12 +135,12 @@ def estimated_volatility_garch(df, p=1,q=1):
     return garch_vol
 
 
-def load_and_generate_features(csv_file):
+def load_and_generate_features(df):
     """
     Lee archivo CSV con columnas Date y Close, y genera features técnicos.
     Opcionalmente genera la columna objetivo 'target' con horizonte n_target días.
     """
-    df = pd.read_csv(csv_file)
+    # df = pd.read_csv(csv_file)
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date')
     
