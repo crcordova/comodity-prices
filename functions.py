@@ -123,9 +123,8 @@ def plot_volatility_forecast(garch_vol, forecast, req, save_local=False):
         "plot": json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
     }
 
-def estimated_volatility_garch(path, p=1,q=1):
-    df = pd.read_csv(path, parse_dates=["Date"])
-    df = df.sort_values("Date")
+def estimated_volatility_garch(df, p=1,q=1):
+    
     returns = 100 * df["Close"].pct_change().dropna()
     returns.index = df["Date"].iloc[1:]
 

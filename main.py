@@ -120,11 +120,21 @@ def calibrate_volatility(req: CalibrationRequest):
     '''
     Con los precios historicos se calibra un modelo de predicción de volatilidad utilizando GARCH y Redes Neuronales
     '''
-    path = f"historical_data/{req.commodity}_prices.csv"
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="CSV not found")
+    # path = f"historical_data/{req.commodity}_prices.csv"
+    # if not os.path.exists(path):
+    #     raise HTTPException(status_code=404, detail="CSV not found")
+    filename = f"historical_data/{req.commodity}_prices.csv"
+    file_s3 = f"prices/{req.commodity}_prices.csv"
+    try:
+        df = read_historical_prices_s3(file_s3)
+    except Exception as e:
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=404, detail=f"File {filename} not found.")
+    
 
-    garch_vol = estimated_volatility_garch(path, p=1,q=1)
+    # df = pd.read_csv(path, parse_dates=["Date"])
+    df = df.sort_values("Date")
+    garch_vol = estimated_volatility_garch(df, p=1,q=1)
 
     X, y = [], []
     for i in range(req.look_back, len(garch_vol)):
